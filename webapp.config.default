@@ -1,0 +1,7 @@
+[config]
+username=user
+password=s3cr1t
+ad_domain=EXAMPLE
+email=user@example.org
+exchange_endpoint=https://mail.example.org/EWS/Exchange.asmx
+

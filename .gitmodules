@@ -1,0 +1,3 @@
+[submodule "vendor/exchangelib"]
+	path = vendor/exchangelib
+	url = https://github.com/ecederstrand/exchangelib.git

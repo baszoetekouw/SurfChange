@@ -1,0 +1,28 @@
+<html>
+<head>
+	<title>Kies je kamer</title>
+	<style>
+		th { text-align: left; }
+		td, th { padding-left: 0.5em; padding-right: 0.5em; padding-bottom: 0.5em; vertical-align: top; }
+		td.item_tijd { white-space: nowrap; }
+	</style>
+</head>
+<body>
+  <h1>Kies je kamer</h1>
+  <div>
+	  <table class="agenda">
+		  <tr>
+			  <th>Welke?</th><th>Wat?</th><th>Hoeveel?</th><th>Waar?</th>
+		  </tr>
+{% for kamer in kamers %}
+		  <tr class="kamer">
+			  <td class="kamer_num" ><a href="{{'../agenda/{email}'.format(**kamer)}}">{{kamer['number']  }}</a></td>
+			  <td class="kamer_type">{{kamer['type']    }}</td>
+			  <td class="kamer_size">{{kamer['people']  }}p</td>
+			  <td class="kamer_loc" >{{kamer['location']}}</td>
+		  </tr>
+{% endfor %}
+	  </table>
+  </div>
+</body>
+</html>

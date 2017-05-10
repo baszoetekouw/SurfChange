@@ -1,0 +1,27 @@
+<html>
+<head>
+	<title>Agenda for {{email}} for {{date.strftime('%Y-%m-%d')}}</title>
+	<style>
+		th { text-align: left; }
+		td, th { padding-left: 0.5em; padding-right: 0.5em; padding-bottom: 0.5em; vertical-align: top; }
+		td.item_tijd { white-space: nowrap; }
+	</style>
+</head>
+<body>
+  <h1>Agenda for {{email}} for {{date.strftime('%a %d %b %Y')}}</h1>
+  <div>
+	  <table class="agenda">
+		  <tr>
+		    <th>Tijd</th><th>Wat?</th><th>Waar?</th>
+		  </tr>
+{% for item in agenda %}
+		  <tr class="agenda_item">
+			  <td class="item_tijd">{{item['time_start']}}-{{item['time_end']}}</td>
+			  <td class="item_subj">{{item['subject']                        }}</td>
+			  <td class="item_loc" >{{item['location']                       }}</td>
+		  </tr>
+{% endfor %}
+	  </table>
+  </div>
+</body>
+</html>
