@@ -11,6 +11,14 @@ import json
 import re
 
 
+# from http://stackoverflow.com/questions/9868653/find-first-sequence-item-that-matches-a-criterium
+def findfirst(items, pred):
+	return next(
+		( i for i in enumerate(items) if pred(i[1]) ),
+		(None,None)
+	)
+
+
 class JSONAgendaEncoder(json.JSONEncoder):
 	def default(self, o):
 		if isinstance(o, datetime.datetime):
@@ -160,6 +168,50 @@ class SurfAgenda:
 		realdate = self._parse_date(date)
 		assert( isinstance(realdate,datetime.date) )
 		return self.get_agenda_for_days(email, realdate, realdate), realdate
+
+	def get_availability(self, email, date=datetime.date.today()):
+		agenda, realdate = self.get_agenda_for_day(email, date)
+		now = datetime.datetime.now(tz=self.tz)
+		now = now.replace(hour=14,minute=15)
+
+		# walk through list to find current/next meeting
+		index_next, entry_next = findfirst(agenda, lambda a: a['end']>now)
+
+		# three possibilities now:
+		# (1) no further meetings today (nothing found, None returned)
+		# (2) room is currently free (so next meeting hasn't started)
+		# (3) room is currently occupied (next meeting has started)
+		if index_next is None:
+			available = True
+			next_dt = None
+			txt = "available"
+		elif entry_next['start']>=now:
+			available = True
+			next_dt = entry_next['start']
+			if next_dt.date()==now.date():
+				txt = "available until {}".format(next_dt.strftime('%H:%M'))
+			else:
+				txt = "available"
+		else:
+			available = False
+			# find next available slot by checking for a gap between meeting of at least 5 minutes
+			# keep track of latest endtime of all relevant meetings
+			last = entry_next['end']
+			for i, a in enumerate( agenda[index_next:-2], index_next ):
+				if agenda[i+1]['start'] - last > datetime.timedelta(minutes=5):
+					next_dt = last
+					break
+				if agenda[i+1]['end']>last:
+					last = agenda[i+1]['end']
+			else:
+				# last element determines end time
+				next_dt = last
+			if next_dt.date()==now.date():
+				txt = "busy until {}".format(next_dt.strftime('%H:%M'))
+			else:
+				txt = "busy"
+
+		return available, next_dt, txt
 
 	def get_rooms_agendas(self):
 		all = dict()
