@@ -97,19 +97,15 @@ class SurfAgenda:
 
 		return dateutil.parser.parse(date, dayfirst=True, yearfirst=False)
 
-
-	def get_agenda(self, email, date_start, date_stop):
+	def get_agenda(self, email, dt_start, dt_stop):
 		assert(self.config)
 		account = self._get_account(email)
 
-		assert( isinstance(date_start,datetime.date) and isinstance(date_stop,datetime.date) )
-		if (date_stop < date_start):
+		assert( isinstance(dt_start,datetime.datetime) and isinstance(dt_stop,datetime.datetime) )
+		if (dt_stop < dt_start):
 			return list()
 
-		dt_start = datetime.datetime.combine(date_start, datetime.time(hour=0,minute=0,tzinfo=self.tz))
-		dt_stop  = datetime.datetime.combine(date_stop,  datetime.time(hour=23,minute=59,second=59,tzinfo=self.tz))
-
-		agenda_items = account.calendar.view( 
+		agenda_items = account.calendar.view(
 			exchangelib.EWSDateTime.from_datetime(dt_start),
 			exchangelib.EWSDateTime.from_datetime(dt_stop)
 		)
@@ -149,10 +145,18 @@ class SurfAgenda:
 
 		return meetings
 
+	def get_agenda_for_days(self, email, date_start, date_stop):
+		assert (isinstance(date_start, datetime.date) and isinstance(date_stop, datetime.date))
+
+		dt_start = datetime.datetime.combine(date_start, datetime.time(hour=0, minute=0, tzinfo=self.tz))
+		dt_stop = datetime.datetime.combine(date_stop, datetime.time(hour=23, minute=59, second=59, tzinfo=self.tz))
+
+		return self.get_agenda(email,dt_start,dt_stop)
+
 	def get_agenda_for_day(self, email, date=datetime.date.today()):
 		realdate = self._parse_date(date)
 		assert( isinstance(realdate,datetime.date) )
-		return self.get_agenda(email, realdate, realdate), realdate
+		return self.get_agenda_for_days(email, realdate, realdate), realdate
 
 	def get_rooms_agendas(self):
 		all = dict()
