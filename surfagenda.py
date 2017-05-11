@@ -143,6 +143,9 @@ class SurfAgenda:
 			})
 			meetings.append(meeting)
 
+		# this probably is already sorted, but let's just make sure
+		meetings = sorted(meetings, key=lambda a: a['start'])
+
 		return meetings
 
 	def get_agenda_for_days(self, email, date_start, date_stop):
