@@ -84,5 +84,21 @@ def all_room_agenda():
 		mimetype='application/json'
 	)
 
+@app.route('/available/<email>')
+def availability(email):
+	global exchange
+	if not '@' in email:
+		email = '{}@surfnet.nl'.format(email)
+
+	data = exchange.get_availability(email)
+
+	if request_wants_json(flask.request):
+		return flask.Response(
+			json.dumps(data, sort_keys=True, indent=4,  cls=surfagenda.JSONAgendaEncoder ),
+			mimetype='application/json'
+		)
+
+	return ""
+
 if __name__ == '__main__':
 	app.run()
