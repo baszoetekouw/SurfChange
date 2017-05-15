@@ -5,6 +5,7 @@ import surfagenda
 import exchangelib
 import json
 import configparser
+import base64
 from pprint import pprint
 
 
@@ -29,6 +30,13 @@ def request_wants_json(request):
 	return best == 'application/json' and \
 	       request.accept_mimetypes[ best ] > \
 	       request.accept_mimetypes[ 'text/html' ]
+
+
+@app.context_processor
+def utility_processor():
+	def b64(str):
+		return base64.urlsafe_b64encode(str.encode('utf-8')).decode('utf-8').replace('=','')
+	return dict(base64=b64)
 
 @app.errorhandler(exchangelib.errors.ErrorNonExistentMailbox)
 def handle_bad_request(e):
