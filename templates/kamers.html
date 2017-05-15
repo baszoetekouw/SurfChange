@@ -1,28 +1,71 @@
 <html>
 <head>
 	<title>Kies je kamer</title>
+	<script src="//code.jquery.com/jquery-3.2.1.min.js"
+	        integrity="sha256-hwg4gsxgFZhOsEEamdOYGBf13FyQuiTwlAQgxVSNgt4="
+	        crossorigin="anonymous"></script>
+	<script src="//cdn.datatables.net/1.10.15/js/jquery.dataTables.min.js"></script>
+	<link rel="stylesheet" type="text/css" href="//cdn.datatables.net/1.10.15/css/jquery.dataTables.css"/>
 	<style>
-		th { text-align: left; }
-		td, th { padding-left: 0.5em; padding-right: 0.5em; padding-bottom: 0.5em; vertical-align: top; }
-		td.item_tijd { white-space: nowrap; }
+		table.datatable { width: 0; margin-left: 0; }
+		table.dataTable tbody th, table.dataTable tbody td { text-align: left; height: auto; min-height: 0;  padding: 0.3em 0.5em; vertical-align: top; white-space: nowrap; }
 	</style>
+	<script>
+		// custom sorting functions
+		jQuery.extend( jQuery.fn.dataTableExt.oSort, {
+			"kamer-pre": function (a) {
+				var el = $.parseHTML(a);
+				var x = el[0].innerText;
+				if (x.length==3) {
+					return x.replace('.','.0')
+				}
+				return x
+			},
+			"pers-pre":   function(a) { return parseInt(a); },
+		} );
+	</script>
 </head>
 <body>
-  <h1>Kies je kamer</h1>
-  <div>
-	  <table class="agenda">
-		  <tr>
-			  <th>Welke?</th><th>Wat?</th><th>Hoeveel?</th><th>Waar?</th>
-		  </tr>
-{% for kamer in kamers %}
-		  <tr class="kamer">
-			  <td class="kamer_num" ><a href="{{'../agenda/{email}'.format(**kamer)}}">{{kamer['number']  }}</a></td>
-			  <td class="kamer_type">{{kamer['type']    }}</td>
-			  <td class="kamer_size">{{kamer['people']  }}p</td>
-			  <td class="kamer_loc" >{{kamer['location']}}</td>
-		  </tr>
-{% endfor %}
-	  </table>
-  </div>
-</body>
+	<h1>Kies je kamer</h1>
+	<div>
+		<table class="agenda stripe" id="agendatable">
+			<thead><tr>
+				<th>Welke?</th><th>Wat?</th><th>Hoeveel?</th><th>Waar?</th><th>Status</th>
+			</tr></thead>
+			<tbody>
+			{% for kamer in kamers %}
+				<tr class="kamer" id="{{ base64(kamer['email']) }}">
+					<td class="kamer_num" ><a href="{{'../agenda/{email}'.format(**kamer)}}">{{kamer['number']  }}</a></td>
+					<td class="kamer_type">{{kamer['type']    }}</td>
+					<td class="kamer_size">{{kamer['people']  }}p</td>
+					<td class="kamer_loc" >{{kamer['location']}}</td>
+					<td class="kamer_status" id="{{ base64('status_{email}'.format(**kamer)) }}">&mdash;</td>
+				</tr>
+			{% endfor %}
+			</tbody>
+		</table>
+	</div>
+	<script language="JavaScript">
+		$('.agenda').DataTable({
+			paging: false,
+			searching: false,
+			autowidth: false,
+			info: false,
+			order: [],
+			columnDefs: [
+				{ type: 'kamer', targets: 0 },
+				{ type: 'pers',  targets: 2 }
+			],
+			fixedColumns: { heightMatch: 'none' }
+		});
+		var kamers = {{ kamers | map(attribute='email') | list | safe }};
+		{% for kamer in kamers %}
+			$.getJSON("{{ '../available/{email}'.format(**kamer) }}", function( data ) {
+				var el=$("#{{ base64('status_{email}'.format(**kamer)) }}")[0];
+				var table = $("#agendatable").DataTable();
+				table.cell(el).data( data.status );
+			});
+		{% endfor %}
+	</script>
+	</body>
 </html>
