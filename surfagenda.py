@@ -257,7 +257,7 @@ class SurfAgenda:
 
 					this_room = {
 						"description" : room.name,
-						"email"       : room.email_address,
+						"email"       : room.email_address.lower(),
 						"type"        : room_type,
 						"people"      : room_pers,
 						"number"      : room_num,
