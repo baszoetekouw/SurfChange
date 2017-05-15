@@ -211,7 +211,11 @@ class SurfAgenda:
 			else:
 				txt = "bezet"
 
-		return available, next_dt, txt
+		return {
+			"available": available,
+			"next"     : next_dt,
+			"status"   : txt
+		}
 
 	def get_rooms_agendas(self):
 		all = dict()
