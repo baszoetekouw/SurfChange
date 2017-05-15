@@ -172,7 +172,9 @@ class SurfAgenda:
 	def get_availability(self, email, date=datetime.date.today()):
 		agenda, realdate = self.get_agenda_for_day(email, date)
 		now = datetime.datetime.now(tz=self.tz)
-		now = now.replace(hour=14,minute=15)
+
+		# debugging
+		#now = now.replace(hour=10,minute=15)
 
 		# walk through list to find current/next meeting
 		index_next, entry_next = findfirst(agenda, lambda a: a['end']>now)
