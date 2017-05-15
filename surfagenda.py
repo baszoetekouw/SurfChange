@@ -278,8 +278,13 @@ class SurfAgenda:
 
 
 if __name__ == "__main__":
-	surfagenda = SurfAgenda(username='user', password='s3cr1t')
-	items_today = surfagenda.get_agenda_for_day('user@example.org')
+	import configparser
+
+	config = configparser.ConfigParser()
+	config.read('webapp.config')
+	config = config._sections[ 'config' ]
+
+	surfagenda = SurfAgenda(**config)
 	#items_today = surfagenda.get_agenda('otheruser@example.org',datetime.date(year=2017,month=4,day=10),datetime.date(year=2017,month=4,day=14))
 	print(json.dumps(items_today, sort_keys=True, indent=4, cls=JSONAgendaEncoder))
 	#pprint(items_today)
