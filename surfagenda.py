@@ -184,14 +184,14 @@ class SurfAgenda:
 		if index_next is None:
 			available = True
 			next_dt = None
-			txt = "available"
+			txt = "vrij"
 		elif entry_next['start']>=now:
 			available = True
 			next_dt = entry_next['start']
 			if next_dt.date()==now.date():
-				txt = "available until {}".format(next_dt.strftime('%H:%M'))
+				txt = "vrij tot {}".format(next_dt.strftime('%H:%M'))
 			else:
-				txt = "available"
+				txt = "vrij"
 		else:
 			available = False
 			# find next available slot by checking for a gap between meeting of at least 5 minutes
@@ -207,9 +207,9 @@ class SurfAgenda:
 				# last element determines end time
 				next_dt = last
 			if next_dt.date()==now.date():
-				txt = "busy until {}".format(next_dt.strftime('%H:%M'))
+				txt = "bezet tot {}".format(next_dt.strftime('%H:%M'))
 			else:
-				txt = "busy"
+				txt = "bezet"
 
 		return available, next_dt, txt
 
