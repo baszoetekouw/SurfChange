@@ -66,6 +66,7 @@ def agenda(email, theDate):
 
 	return flask.render_template('agenda.html',email=email,agenda=items,date=realdate)
 
+@app.route('/kamer/')
 @app.route('/room/')
 def all_rooms():
 	global exchange
@@ -83,6 +84,7 @@ def all_rooms():
 
 	return flask.render_template('kamers.html', kamers=kamers)
 
+@app.route('/kamer/alles/agenda')
 @app.route('/room/all/agenda')
 def all_room_agenda():
 	global exchange
@@ -92,6 +94,7 @@ def all_room_agenda():
 		mimetype='application/json'
 	)
 
+@app.route('/issievrij/<email>')
 @app.route('/available/<email>')
 def availability(email):
 	global exchange

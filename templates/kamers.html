@@ -59,7 +59,7 @@
 			fixedColumns: { heightMatch: 'none' }
 		});
 		{% for kamer in kamers %}
-			$.getJSON("{{ '../available/{email}'.format(**kamer) }}", function( data ) {
+			$.getJSON("{{ '../issievrij/{email}'.format(**kamer) }}", function( data ) {
 				var el=$("#{{ base64('status_{email}'.format(**kamer)) }}")[0];
 				var table = $("#agendatable").DataTable();
 				table.cell(el).data( data.status );
