@@ -8,7 +8,7 @@ setup(name='surfagenda',
 	author_email='bas.zoetekouw@surfnet.nl',
 	license='APL2',
 	packages=['surfagenda'],
-	install_requires=['exchangelib','ordereddict','flask'],
+	install_requires=['exchangelib','ordereddict','Flask'],
 	python_requires='>=3.4',
 	zip_safe=False,
 )
