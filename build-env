@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+DIR=$1
+test -e "$DIR" && echo "Dir '$DIR' already exists" && exit 1
+
+virtualenv -p python3 --system-site-packages "$DIR"
+
+PIP=$DIR/bin/pip
+$PIP install exchangelib
+$PIP install flask
+$PIP install ordereddict
+
+exit 0
