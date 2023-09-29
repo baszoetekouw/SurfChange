@@ -2,12 +2,22 @@
 
 import flask
 import surfagenda
-import exchangelib
+#import exchangelib
 import exchangelib.errors
 import json
 import configparser
 import base64
+import logging
+from flask.logging import default_handler
 from pprint import pprint
+
+log_root = logging.getLogger()
+log_root.setLevel(logging.DEBUG)
+
+handler = logging.FileHandler('debug.log')
+handler.setLevel(logging.DEBUG)
+handler.addFilter(logging.Filter('surfagenda'))
+log_root.addHandler(handler)
 
 
 def read_config():
@@ -19,11 +29,9 @@ def read_config():
         raise Exception("Invalid config file: missing options")
     return config._sections['config']
 
-
+app = flask.Flask(__name__)
 config = read_config()
 exchange = surfagenda.SurfAgenda(**config)
-app = flask.Flask(__name__)
-
 
 def request_wants_json(request):
     best = request.accept_mimetypes.best_match(['application/json', 'text/html'])
@@ -64,7 +72,9 @@ def agenda(email, theDate):
 
 
 @app.route('/kamer/')
+@app.route('/kamer')
 @app.route('/room/')
+@app.route('/room')
 def all_rooms():
     global exchange
     rooms = exchange.get_rooms()
@@ -105,4 +115,5 @@ def availability(email):
 
 
 if __name__ == '__main__':
+    app.debug = True
     app.run()

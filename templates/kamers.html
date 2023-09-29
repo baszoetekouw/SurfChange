@@ -35,7 +35,7 @@
 			<tbody>
 			{% for kamer in kamers %}
 				<tr class="kamer" id="{{ base64(kamer['email']) }}">
-					<td class="kamer_num" ><a href="{{'../agenda/{email}'.format(**kamer)}}">{{kamer['number']  }}</a></td>
+					<td class="kamer_num" ><a href="{{'/agenda/agenda/{email}'.format(**kamer)}}">{{kamer['number']  }}</a></td>
 					<td class="kamer_type">{{kamer['type']    }}</td>
 					<td class="kamer_size">{{kamer['people']  }}p</td>
 					<td class="kamer_loc" >{{kamer['location']}}</td>

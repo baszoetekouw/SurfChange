@@ -3,6 +3,7 @@
 import exchangelib
 
 from pprint import pprint
+import logging
 import datetime
 import dateutil.parser
 import time
@@ -29,6 +30,9 @@ class JSONAgendaEncoder(json.JSONEncoder):
 class SurfAgenda:
     def __init__(self, email, username, password, ad_domain, tz='Europe/Amsterdam', exchange_endpoint=None,
                  exchange_authtype='NTLM'):
+        self.logger = logging.getLogger(__name__)
+        self.logger.debug("Initializing SurfAgenda")
+
         self.username = username
         self.domain = ad_domain
         self.login = '%s\%s' % (self.domain, self.username)
@@ -91,6 +95,7 @@ class SurfAgenda:
 
     def get_agenda(self, email, dt_start, dt_stop):
         assert (self.config)
+        self.logger.debug("get_agenda for {}, from {} to {}".format(email,dt_start,dt_stop))
         account = self._get_account(email)
 
         assert (isinstance(dt_start, datetime.datetime) and isinstance(dt_stop, datetime.datetime))
@@ -118,14 +123,23 @@ class SurfAgenda:
             if item.organizer and not is_private:
                 organizer = (item.organizer.name, item.organizer.email_address)
 
-            meeting = dict({'start': item.start.astimezone(self.tz), 'end': item.end.astimezone(self.tz),
+            # TODO: change dates/times to proper datetime.(date)(time), and handle stringification during json
+            # serialization
+            meeting = dict({
+                'start'     : item.start.astimezone(self.tz),
+                'end'       : item.end.astimezone(self.tz),
                 'time_start': item.start.astimezone(self.tz).strftime('%H:%M'),
-                'time_end': item.end.astimezone(self.tz).strftime('%H:%M'),
+                'time_end'  : item.end.astimezone(self.tz).strftime('%H:%M'),
                 'date_start': item.start.astimezone(self.tz).strftime('%Y-%m-%d'),
-                'date_end': item.end.astimezone(self.tz).strftime('%Y-%m-%d'), 'all_day': item.is_all_day,
-                'organizer': organizer, 'subject': item.subject if not is_private else "Private appointment",
-                'location': item.location if not is_private else "Undisclosed", 'attendees': attendees, })
+                'date_end'  : item.end.astimezone(self.tz).strftime('%Y-%m-%d'),
+                'all_day'   : item.is_all_day,
+                'organizer' : organizer,
+                'subject'   : item.subject  if not is_private else "Private appointment",
+                'location'  : item.location if not is_private else "Undisclosed",
+                'attendees' : attendees,
+            })
             meetings.append(meeting)
+            self.logger.debug("  - {start}-{end}: {subject}".format(**meeting))
 
         # this probably is already sorted, but let's just make sure
         meetings = sorted(meetings, key=lambda a: a['start'])
@@ -135,8 +149,8 @@ class SurfAgenda:
     def get_agenda_for_days(self, email, date_start, date_stop):
         assert (isinstance(date_start, datetime.date) and isinstance(date_stop, datetime.date))
 
-        dt_start = datetime.datetime.combine(date_start, datetime.time(hour=0, minute=0, tzinfo=self.tz))
-        dt_stop = datetime.datetime.combine(date_stop, datetime.time(hour=23, minute=59, second=59, tzinfo=self.tz))
+        dt_start = datetime.datetime.combine(date_start, datetime.time(hour=0,  minute=0,  second=0,  tzinfo=self.tz))
+        dt_stop  = datetime.datetime.combine(date_stop,  datetime.time(hour=23, minute=59, second=59, tzinfo=self.tz))
 
         return self.get_agenda(email, dt_start, dt_stop)
 
@@ -146,24 +160,31 @@ class SurfAgenda:
         return self.get_agenda_for_days(email, realdate, realdate), realdate
 
     def get_availability(self, email, date=datetime.date.today()):
+        self.logger.info("Fetching availability for %s on %s", email, date.isoformat())
+
         agenda, realdate = self.get_agenda_for_day(email, date)
         now = datetime.datetime.now(tz=self.tz)
 
+        self.logger.info("Now is %s", now.isoformat())
+        self.logger.debug("Agenda for %s: %s", email, json.dumps(agenda, sort_keys=True, indent=4, cls=JSONAgendaEncoder))
         # debugging
         # now = now.replace(hour=10,minute=15)
 
         # walk through list to find current/next meeting
         index_next, entry_next = findfirst(agenda, lambda a: a['end'] > now)
+        self.logger.debug("Next is {}: {}".format(index_next,json.dumps(entry_next, cls=JSONAgendaEncoder)))
 
         # three possibilities now:
         # (1) no further meetings today (nothing found, None returned)
         # (2) room is currently free (so next meeting hasn't started)
         # (3) room is currently occupied (next meeting has started)
         if index_next is None:
+            self.logger.debug("fork (1)")
             available = True
             next_dt = None
             txt = "vrij"
         elif entry_next['start'] >= now:
+            self.logger.debug("fork (2)")
             available = True
             next_dt = entry_next['start']
             if next_dt.date() == now.date():
@@ -171,6 +192,7 @@ class SurfAgenda:
             else:
                 txt = "vrij"
         else:
+            self.logger.debug("fork (3)")
             available = False
             # find next available slot by checking for a gap between meeting of at least 5 minutes
             # keep track of latest endtime of all relevant meetings
@@ -189,7 +211,9 @@ class SurfAgenda:
             else:
                 txt = "bezet"
 
-        return {"available": available, "next": next_dt, "status": txt}
+        status = {"available": available, "next": next_dt, "status": txt}
+        self.logger.debug("Returning {}".format(json.dumps(status,cls=JSONAgendaEncoder)))
+        return status
 
     def get_rooms_agendas(self):
         all = dict()
@@ -199,7 +223,7 @@ class SurfAgenda:
 
     def get_rooms(self):
         if time.time() - self._rooms['updated'] > 24 * 3600 or self._rooms['data'] is None:
-            print("fetching rooms, age=%f" % (time.time() - self._rooms['updated']))
+            self.logger.debug("fetching rooms, age=%f" % (time.time() - self._rooms['updated']))
             self._rooms['data'] = self._fetch_rooms()
             self._rooms['updated'] = time.time()
 
