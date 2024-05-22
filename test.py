@@ -15,11 +15,14 @@ You can then run this sample with a JSON configuration file:
 
     python sample.py parameters.json
 """
-import pprint
+
+from pprint import pprint
 import sys  # For simplicity, we'll read config file from 1st CLI param sys.argv[1]
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
+import re
 
 import jwt
 import requests
@@ -106,7 +109,7 @@ def get_token(scope: dict[str]):
         account=accounts[0],
         authority=None,
         claims_challenge=None,
-        force_refresh=True,
+        force_refresh=False,
     )
 
     if cache.has_state_changed:
@@ -154,4 +157,54 @@ a = Account(
     autodiscover=False,
     access_type=DELEGATE,
 )
-print(a.root.tree())
+# print(a.root.tree())
+print(
+    a.calendar.filter(
+        start__range=(
+            datetime(2024, 5, 20, 0, 0, 0, tzinfo=a.default_timezone),
+            datetime(2024, 5, 31, 23, 59, 59, tzinfo=a.default_timezone),
+        )
+    )[0]
+)
+
+print(a.delegates)
+
+all_rooms=dict()
+for roomlist in a.protocol.get_roomlists():
+    print(roomlist.email_address)
+    for room in a.protocol.get_rooms(roomlist.email_address):
+        # parse room name for useful info
+        # vergaderzaal 4.1 (18p, 75” lcd, conf. telefoon)
+        match = re.search("^(\S+) +(\d.\d+) .+ +(\d+)p", room.name)
+        room_type, room_num, room_pers = (
+            match.groups() if match else ("unknown", "0.0", "?")
+        )
+
+        if room_type not in ('UTR', 'AMS'):
+            continue
+
+        if room_num in all_rooms:
+            all_rooms[room_num]["groups"].add(roomlist.email_address)
+        else:
+            # parse room number and determine location
+            try:
+                room_floor, room_floornum = (int(i) for i in room_num.split("."))
+            except ValueError:
+                room_floor, room_floornum = ('?', '?')
+
+            location = room_type
+
+            this_room = {
+                "description": room.name,
+                "email": room.email_address.lower(),
+                "type": room_type,
+                "people": room_pers,
+                "number": room_num,
+                "floor": room_floor,
+                "floor_subnum": room_floornum,
+                "location": location,
+                "groups": set([roomlist.email_address]),
+            }
+            all_rooms[room_num] = this_room
+
+pprint(all_rooms)
