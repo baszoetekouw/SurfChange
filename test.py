@@ -65,7 +65,7 @@ def get_msal_app() -> (
 
     accounts = app.get_accounts()
     # no accounts yet, starft device flow
-    if not accounts:
+    if True and not accounts:
         flow = app.initiate_device_flow(scopes=config["exchange_scope"])
         if "user_code" not in flow:
             raise ValueError(
@@ -77,6 +77,27 @@ def get_msal_app() -> (
 
         # block until the user has authenticated
         token = app.acquire_token_by_device_flow(flow)
+
+        if "access_token" not in token:
+            raise ValueError(
+                token.get("error")
+                + token.get("error_description")
+                + token.get("correlation_id")
+            )
+
+    # authz flow
+    if False:
+        token = app.initiate_auth_code_flow(scopes=config["exchange_scope"], redirect_uri="https://localhost")
+        if "auth_uri" not in flow:
+            raise ValueError(
+                "Fail to create device flow. Err: %s" % json.dumps(flow, indent=4)
+            )
+
+        print(flow["message"])
+        sys.stdout.flush()  # Some terminal needs this to ensure the message is shown
+
+        # block until the user has authenticated
+        token = app.aquire_token_by_auth_code_flow(flow)
 
         if "access_token" not in token:
             raise ValueError(
