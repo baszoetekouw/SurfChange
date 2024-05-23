@@ -1,12 +1,27 @@
 #!/usr/bin/python3
+from __future__ import annotations
+
+import sys
+from pathlib import Path
 
 import exchangelib
+from exchangelib import (
+    Configuration,
+    OAUTH2,
+    Account,
+    OAuth2AuthorizationCodeCredentials,
+    DELEGATE,
+)
 
 from pprint import pprint
 import logging
 import datetime
 import dateutil.parser
 import time
+
+import jwt
+import msal
+import platformdirs
 import pytz
 import json
 import re
@@ -27,83 +42,193 @@ class JSONAgendaEncoder(json.JSONEncoder):
             return json.JSONEncoder.default(self, o)
 
 
+DEFAULT_CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753"  # thunderbird client_id
+DEFAULT_TIMEZONE = "Europe/Amsterdam"
+DEFAULT_CACHE_FILE = Path(platformdirs.user_cache_dir()) / Path("net.zoetekouw.surfchange.tokens.bin")
+DEFAULT_EXCHANGE_SCOPE = ["https://outlook.office.com/EWS.AccessAsUser.All"]
+DEFAULT_GRAPH_SCOPE = ["User.Read", "User.ReadBasic.All"]
+DEFAULT_EWS_SERVER = "outlook.office.com"
+
+
+# token cache that automatically saves to file on changes
+class SurfTokenCache(msal.SerializableTokenCache):
+    def __init__(self, cache_file: Path | str = DEFAULT_CACHE_FILE):
+        self.cache_file = Path(cache_file)
+        super(SurfTokenCache, self).__init__()
+        try:
+            self.load()
+        except FileNotFoundError:
+            # no cache file yet, create one
+            self.save()
+
+    def save(self):
+        # make sure permissions are safe, also for new files
+        self.cache_file.touch()
+        self.cache_file.chmod(0o600)
+        self.cache_file.write_text(self.serialize())
+
+    def load(self, cache_file=None):
+        if cache_file is not None:
+            self.cache_file = cache_file
+        self.deserialize(self.cache_file.read_text())
+
+    def add(self, *args):
+        super(SurfTokenCache, self).add(*args)
+        if self.has_state_changed:
+            self.save()
+
+    def modify(self, *args):
+        super(SurfTokenCache, self).modify(*args)
+        if self.has_state_changed:
+            self.save()
+
+
 class SurfAgenda:
-    def __init__(self, email, username, password, ad_domain, tz='Europe/Amsterdam', exchange_endpoint=None,
-                 exchange_authtype='NTLM'):
+    def __init__(
+        self,
+        email,
+        client_id=DEFAULT_CLIENT_ID,
+        cache_file=DEFAULT_CACHE_FILE,
+        tz=DEFAULT_TIMEZONE,
+    ):
         self.logger = logging.getLogger(__name__)
         self.logger.debug("Initializing SurfAgenda")
 
-        self.username = username
-        self.domain = ad_domain
-        self.login = '%s\%s' % (self.domain, self.username)
         self.email = email
-        self.password = password
-        self.credentials = exchangelib.ServiceAccount(self.login, self.password, max_wait=5)
+        self.client_id = client_id
+        self.authority = "https://login.microsoftonline.com/common"
+        self.scopes = DEFAULT_EXCHANGE_SCOPE + DEFAULT_GRAPH_SCOPE
+
         self.tz = pytz.timezone(tz)
 
-        self.default_endpoint = exchange_endpoint
-        self.default_authtype = exchange_authtype
-
-        # use autodiscovery if no endpoint was specified
-        if self.default_endpoint:
-            self._connect(False)
+        self._msal_cache = None
+        if cache_file is None:
+            self._msal_cache = msal.TokenCache() # in-memory cache
         else:
-            self._connect(True)
+            self._msal_cache = SurfTokenCache(cache_file=cache_file)
+
+        self._msal_app = self._get_msal_app()
+        self.credentials = None
 
         self._rooms = {"updated": 0, "data": None}
 
-    def _connect(self, force_autodiscovery=False):
-        if force_autodiscovery:
-            (endpoint, auth_type) = self._do_autodiscovery()
-        else:
-            endpoint = self.default_endpoint
-            auth_type = self.default_authtype
+    def _get_msal_app(self) -> msal.PublicClientApplication:
+        # try to read cache
+        app = msal.PublicClientApplication(
+            client_id=self.client_id,
+            authority=self.authority,
+            token_cache=self._msal_cache,
+        )
+        return app
 
-        self.config = exchangelib.Configuration(service_endpoint=endpoint, auth_type=auth_type,
-            credentials=self.credentials)
+    def authenticate(self):
+        app = self._msal_app
+        accounts = app.get_accounts()
+        if not accounts:
+            # no accounts yet, start device code flow
+            flow = app.initiate_device_flow(scopes=self.scopes)
+            if "user_code" not in flow:
+                raise ValueError("Fail to create device code flow. Err: %s"
+                                 % json.dumps(flow, indent=4))
 
-    def _do_autodiscovery(self, force=False):
-        account = exchangelib.Account(primary_smtp_address=self.email, credentials=self.credentials, autodiscover=True,
-            access_type=exchangelib.DELEGATE)
-        assert (account is not None)
+            # print URL and device code to log in to Microsoft
+            print(flow["message"])
+            sys.stdout.flush()
 
-        return account.protocol.service_endpoint, account.protocol.auth_type
+            # block until the user has authenticated in the browser
+            token = app.acquire_token_by_device_flow(flow)
+
+            if "access_token" not in token:
+                raise ValueError(
+                    token.get("error")
+                    + token.get("error_description")
+                    + token.get("correlation_id")
+                )
+
+        self._msal_app = app
+
+    def get_token(self, scopes: list[str]):
+        self.authenticate()
+        accounts = self._msal_app.get_accounts()
+
+        # fetch the token from cache (and refresh it if necessary)
+        print(
+            f"Found account for {accounts[0]['username']} in cache. Trying to fetch token silently"
+        )
+        token = self._msal_app.acquire_token_silent(
+            scopes=scopes,
+            account=accounts[0],
+            authority=None,
+            claims_challenge=None,
+            force_refresh=False,
+        )
+
+        id_token = token["access_token"]
+        # decode the OIDC id_token to get the user's email address
+        algorithm = jwt.get_unverified_header(id_token).get("alg")
+        decoded = jwt.decode(id_token, verify=False, options={"verify_signature": False})
+        print("Got token:")
+        print("  - alg: " + algorithm)
+        print("  - aud: " + decoded["aud"])
+        print("  - upn: " + decoded["upn"])
+        print("  - scp: " + decoded["scp"])
+
+        return token
+    def get_EWS_token(self):
+        return self.get_token(DEFAULT_EXCHANGE_SCOPE)
+
+    def get_graph_token(self):
+        return self.get_token(DEFAULT_GRAPH_SCOPE)
+
 
     def _get_account(self, email):
-        assert (self.config)
-        account = exchangelib.Account(primary_smtp_address=email, config=self.config, autodiscover=False,
-            access_type=exchangelib.DELEGATE)
+        # now exchangelib:
+        creds = OAuth2AuthorizationCodeCredentials(access_token=self.get_EWS_token())
+        # creds = OAuth2AuthorizationCodeCredentials( access_token=OAuth2Token({'access_token': token}))
+        conf = Configuration(server=DEFAULT_EWS_SERVER, auth_type=OAUTH2, credentials=creds)
+        account = Account(
+            primary_smtp_address=email,
+            config=conf,
+            autodiscover=False,
+            access_type=DELEGATE,
+        )
         return account
 
-    def _parse_date(self, date):
+    @staticmethod
+    def _parse_date(date):
         if isinstance(date, datetime.date):
             return date
         if isinstance(date, datetime.datetime):
             return date.date()
 
-        if date == 'today' or date == 'vandaag':
+        if date == "today" or date == "vandaag":
             return datetime.date.today()
-        if date == 'tomorrow' or date == 'morgen':
+        if date == "tomorrow" or date == "morgen":
             return datetime.date.today() + datetime.timedelta(days=1)
-        if date == 'dayaftertomorrow' or date == 'dat' or date == 'overmorgen':
+        if date == "dayaftertomorrow" or date == "dat" or date == "overmorgen":
             return datetime.date.today() + datetime.timedelta(days=2)
-        if date[0] == '+':
+        if date[0] == "+":
             numdays = int(date[1:])
             return datetime.date.today() + datetime.timedelta(days=numdays)
 
         return dateutil.parser.parse(date, dayfirst=True, yearfirst=False)
 
     def get_agenda(self, email, dt_start, dt_stop):
-        assert (self.config)
-        self.logger.debug("get_agenda for {}, from {} to {}".format(email,dt_start,dt_stop))
+        self.logger.debug(
+            "get_agenda for {}, from {} to {}".format(email, dt_start, dt_stop)
+        )
         account = self._get_account(email)
 
-        assert (isinstance(dt_start, datetime.datetime) and isinstance(dt_stop, datetime.datetime))
-        if (dt_stop < dt_start):
+        assert isinstance(dt_start, datetime.datetime) and isinstance(
+            dt_stop, datetime.datetime
+        )
+        if dt_stop < dt_start:
             return list()
 
-        agenda_items = account.calendar.view(exchangelib.EWSDateTime.from_datetime(dt_start),
-            exchangelib.EWSDateTime.from_datetime(dt_stop))
+        agenda_items = account.calendar.view(
+            exchangelib.EWSDateTime.from_datetime(dt_start),
+            exchangelib.EWSDateTime.from_datetime(dt_stop),
+        )
         agenda_items = sorted(agenda_items, key=lambda a: a.start)
 
         meetings = list()
@@ -111,52 +236,72 @@ class SurfAgenda:
             # print("===========================")
             # print(item)
 
-            is_private = (item.sensitivity.lower() == 'private')
+            is_private = item.sensitivity.lower() == "private"
 
             attendees = list()
             if item.required_attendees and not is_private:
-                attendees.append([(p.mailbox.name, p.mailbox.email_address) for p in item.required_attendees])
+                attendees.append(
+                    [
+                        (p.mailbox.name, p.mailbox.email_address)
+                        for p in item.required_attendees
+                    ]
+                )
             if item.optional_attendees and not is_private:
-                attendees.append([(p.mailbox.name, p.mailbox.email_address) for p in item.optional_attendees])
+                attendees.append(
+                    [
+                        (p.mailbox.name, p.mailbox.email_address)
+                        for p in item.optional_attendees
+                    ]
+                )
 
-            organizer = ('', '')
+            organizer = ("", "")
             if item.organizer and not is_private:
                 organizer = (item.organizer.name, item.organizer.email_address)
 
             # TODO: change dates/times to proper datetime.(date)(time), and handle stringification during json
             # serialization
-            meeting = dict({
-                'start'     : item.start.astimezone(self.tz),
-                'end'       : item.end.astimezone(self.tz),
-                'time_start': item.start.astimezone(self.tz).strftime('%H:%M'),
-                'time_end'  : item.end.astimezone(self.tz).strftime('%H:%M'),
-                'date_start': item.start.astimezone(self.tz).strftime('%Y-%m-%d'),
-                'date_end'  : item.end.astimezone(self.tz).strftime('%Y-%m-%d'),
-                'all_day'   : item.is_all_day,
-                'organizer' : organizer,
-                'subject'   : item.subject  if not is_private else "Private appointment",
-                'location'  : item.location if not is_private else "Undisclosed",
-                'attendees' : attendees,
-            })
+            meeting = dict(
+                {
+                    "start": item.start.astimezone(self.tz),
+                    "end": item.end.astimezone(self.tz),
+                    "time_start": item.start.astimezone(self.tz).strftime("%H:%M"),
+                    "time_end": item.end.astimezone(self.tz).strftime("%H:%M"),
+                    "date_start": item.start.astimezone(self.tz).strftime("%Y-%m-%d"),
+                    "date_end": item.end.astimezone(self.tz).strftime("%Y-%m-%d"),
+                    "all_day": item.is_all_day,
+                    "organizer": organizer,
+                    "subject": (
+                        item.subject if not is_private else "Private appointment"
+                    ),
+                    "location": item.location if not is_private else "Undisclosed",
+                    "attendees": attendees,
+                }
+            )
             meetings.append(meeting)
             self.logger.debug("  - {start}-{end}: {subject}".format(**meeting))
 
         # this probably is already sorted, but let's just make sure
-        meetings = sorted(meetings, key=lambda a: a['start'])
+        meetings = sorted(meetings, key=lambda a: a["start"])
 
         return meetings
 
     def get_agenda_for_days(self, email, date_start, date_stop):
-        assert (isinstance(date_start, datetime.date) and isinstance(date_stop, datetime.date))
+        assert isinstance(date_start, datetime.date) and isinstance(
+            date_stop, datetime.date
+        )
 
-        dt_start = datetime.datetime.combine(date_start, datetime.time(hour=0,  minute=0,  second=0,  tzinfo=self.tz))
-        dt_stop  = datetime.datetime.combine(date_stop,  datetime.time(hour=23, minute=59, second=59, tzinfo=self.tz))
+        dt_start = datetime.datetime.combine(
+            date_start, datetime.time(hour=0, minute=0, second=0, tzinfo=self.tz)
+        )
+        dt_stop = datetime.datetime.combine(
+            date_stop, datetime.time(hour=23, minute=59, second=59, tzinfo=self.tz)
+        )
 
         return self.get_agenda(email, dt_start, dt_stop)
 
     def get_agenda_for_day(self, email, date=datetime.date.today()):
         realdate = self._parse_date(date)
-        assert (isinstance(realdate, datetime.date))
+        assert isinstance(realdate, datetime.date)
         return self.get_agenda_for_days(email, realdate, realdate), realdate
 
     def get_availability(self, email, date=datetime.date.today()):
@@ -166,13 +311,21 @@ class SurfAgenda:
         now = datetime.datetime.now(tz=self.tz)
 
         self.logger.info("Now is %s", now.isoformat())
-        self.logger.debug("Agenda for %s: %s", email, json.dumps(agenda, sort_keys=True, indent=4, cls=JSONAgendaEncoder))
+        self.logger.debug(
+            "Agenda for %s: %s",
+            email,
+            json.dumps(agenda, sort_keys=True, indent=4, cls=JSONAgendaEncoder),
+        )
         # debugging
         # now = now.replace(hour=10,minute=15)
 
         # walk through list to find current/next meeting
-        index_next, entry_next = findfirst(agenda, lambda a: a['end'] > now)
-        self.logger.debug("Next is {}: {}".format(index_next,json.dumps(entry_next, cls=JSONAgendaEncoder)))
+        index_next, entry_next = findfirst(agenda, lambda a: a["end"] > now)
+        self.logger.debug(
+            "Next is {}: {}".format(
+                index_next, json.dumps(entry_next, cls=JSONAgendaEncoder)
+            )
+        )
 
         # three possibilities now:
         # (1) no further meetings today (nothing found, None returned)
@@ -183,12 +336,12 @@ class SurfAgenda:
             available = True
             next_dt = None
             txt = "vrij"
-        elif entry_next['start'] >= now:
+        elif entry_next["start"] >= now:
             self.logger.debug("fork (2)")
             available = True
-            next_dt = entry_next['start']
+            next_dt = entry_next["start"]
             if next_dt.date() == now.date():
-                txt = "vrij tot {}".format(next_dt.strftime('%H:%M'))
+                txt = "vrij tot {}".format(next_dt.strftime("%H:%M"))
             else:
                 txt = "vrij"
         else:
@@ -196,38 +349,45 @@ class SurfAgenda:
             available = False
             # find next available slot by checking for a gap between meeting of at least 5 minutes
             # keep track of latest endtime of all relevant meetings
-            last = entry_next['end']
+            last = entry_next["end"]
             for i, a in enumerate(agenda[index_next:-2], index_next):
-                if agenda[i + 1]['start'] - last > datetime.timedelta(minutes=5):
+                if agenda[i + 1]["start"] - last > datetime.timedelta(minutes=5):
                     next_dt = last
                     break
-                if agenda[i + 1]['end'] > last:
-                    last = agenda[i + 1]['end']
+                if agenda[i + 1]["end"] > last:
+                    last = agenda[i + 1]["end"]
             else:
                 # last element determines end time
                 next_dt = last
             if next_dt.date() == now.date():
-                txt = "bezet tot {}".format(next_dt.strftime('%H:%M'))
+                txt = "bezet tot {}".format(next_dt.strftime("%H:%M"))
             else:
                 txt = "bezet"
 
         status = {"available": available, "next": next_dt, "status": txt}
-        self.logger.debug("Returning {}".format(json.dumps(status,cls=JSONAgendaEncoder)))
+        self.logger.debug(
+            "Returning {}".format(json.dumps(status, cls=JSONAgendaEncoder))
+        )
         return status
 
     def get_rooms_agendas(self):
         all = dict()
         for room in self.get_rooms().values():
-            all[room['number']] = self.get_agenda_for_day(room['email'])
+            all[room["number"]] = self.get_agenda_for_day(room["email"])
         return all
 
     def get_rooms(self):
-        if time.time() - self._rooms['updated'] > 24 * 3600 or self._rooms['data'] is None:
-            self.logger.debug("fetching rooms, age=%f" % (time.time() - self._rooms['updated']))
-            self._rooms['data'] = self._fetch_rooms()
-            self._rooms['updated'] = time.time()
+        if (
+            time.time() - self._rooms["updated"] > 24 * 3600
+            or self._rooms["data"] is None
+        ):
+            self.logger.debug(
+                "fetching rooms, age=%f" % (time.time() - self._rooms["updated"])
+            )
+            self._rooms["data"] = self._fetch_rooms()
+            self._rooms["updated"] = time.time()
 
-        return self._rooms['data']
+        return self._rooms["data"]
 
     def _fetch_rooms(self):
         account = self._get_account(self.email)
@@ -236,14 +396,16 @@ class SurfAgenda:
             for room in account.protocol.get_rooms(roomlist.email_address):
                 # parse room name for useful info
                 # vergaderzaal 4.1 (18p, 75” lcd, conf. telefoon)
-                match = re.search('^(\S+) +(\d.\d+) +\((\d+)p', room.name)
-                room_type, room_num, room_pers = match.groups() if match else ("unknown", "0.0", "?")
+                match = re.search("^(\S+) +(\d.\d+) +\((\d+)p", room.name)
+                room_type, room_num, room_pers = (
+                    match.groups() if match else ("unknown", "0.0", "?")
+                )
 
                 if room_num in all_rooms:
                     all_rooms[room_num]["groups"].append(roomlist.email_address)
                 else:
                     # parse room number and determine location
-                    room_floor, room_floornum = (int(i) for i in room_num.split('.'))
+                    room_floor, room_floornum = (int(i) for i in room_num.split("."))
                     if room_floor == 3 and room_floornum <= 6:
                         location = "vergadercentrum"
                     elif room_floor == 4 and room_floornum < 10:
@@ -257,21 +419,31 @@ class SurfAgenda:
                     else:
                         location = "unknown"
 
-                    this_room = {"description": room.name, "email": room.email_address.lower(), "type": room_type,
-                        "people": room_pers, "number": room_num, "floor": room_floor, "floor_subnum": room_floornum,
-                        "location": location, "groups": [roomlist.email_address], }
+                    this_room = {
+                        "description": room.name,
+                        "email": room.email_address.lower(),
+                        "type": room_type,
+                        "people": room_pers,
+                        "number": room_num,
+                        "floor": room_floor,
+                        "floor_subnum": room_floornum,
+                        "location": location,
+                        "groups": [roomlist.email_address],
+                    }
 
                     all_rooms[room_num] = this_room
-        return (all_rooms)
+        return all_rooms
 
 
 if __name__ == "__main__":
     import configparser
 
     config = configparser.ConfigParser()
-    config.read('webapp.config')
-    config = config._sections['config']
+    config.read("webapp.config")
+    config = config._sections["config"]
 
     surfagenda = SurfAgenda(**config)
     # items_today = surfagenda.get_agenda('otheruser@example.org',datetime.date(year=2017,month=4,day=10),datetime.date(year=2017,month=4,day=14))
-    print(json.dumps(items_today, sort_keys=True, indent=4, cls=JSONAgendaEncoder))  # pprint(items_today)
+    print(
+        json.dumps(items_today, sort_keys=True, indent=4, cls=JSONAgendaEncoder)
+    )  # pprint(items_today)

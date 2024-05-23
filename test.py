@@ -208,3 +208,19 @@ for roomlist in a.protocol.get_roomlists():
             all_rooms[room_num] = this_room
 
 pprint(all_rooms)
+
+
+a2 = Account(
+    primary_smtp_address="floris.fokkinga@surf.nl",
+    config=conf,
+    autodiscover=False,
+    access_type=DELEGATE,
+)
+print(
+    a.calendar.filter(
+        start__range=(
+            datetime(2024, 5, 23, 0, 0, 0, tzinfo=a.default_timezone),
+            datetime(2024, 5, 31, 23, 59, 59, tzinfo=a.default_timezone),
+        )
+    )[0]
+)
