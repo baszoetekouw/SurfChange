@@ -22,10 +22,12 @@ log_root.addHandler(handler)
 
 def read_config():
     config = configparser.ConfigParser()
-    config.read('webapp.config')
-    if not ( config.has_section('config') and config.has_option('config', 'username') and
-             config.has_option('config', 'password') and config.has_option('config', 'ad_domain') and
-             config.has_option('config', 'email') and config.has_option('config','exchange_endpoint')):
+    with open('webapp.config') as f:
+        config.read('webapp.config')
+    if not ( config.has_section('config')
+             and config.has_option('config', 'client_id')
+             and config.has_option('config', 'client_secret')
+             and config.has_option('config', 'tenant_id') ):
         raise Exception("Invalid config file: missing options")
     return config._sections['config']
 
