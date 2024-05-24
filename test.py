@@ -156,6 +156,9 @@ def get_exchange_token():
     return get_token(config["exchange_scope"])
 
 
+#############################
+# MS graph
+#############################
 graph_token = get_graph_token()
 # Calling graph using the access token
 graph_data = requests.get(  # Use token to call downstream service
@@ -163,9 +166,12 @@ graph_data = requests.get(  # Use token to call downstream service
     headers={"Authorization": "Bearer " + graph_token["access_token"]},
 ).json()
 print("Graph API call result: %s" % json.dumps(graph_data, indent=2))
-
 email = graph_data["userPrincipalName"]
 
+
+#############################
+# MS Exchange
+#############################
 exchange_token = get_exchange_token()
 
 # now exchangelib:

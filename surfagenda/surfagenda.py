@@ -1,8 +1,24 @@
 #!/usr/bin/python3
 from __future__ import annotations
 
+import dataclasses
 import sys
+from enum import Enum, StrEnum
 from pathlib import Path
+
+from pprint import pprint
+import logging
+import datetime
+import dateutil.parser
+import time
+
+import jwt
+import pytz
+import json
+import re
+
+import msal, msal.authority
+import platformdirs
 
 import exchangelib
 from exchangelib import (
@@ -13,18 +29,6 @@ from exchangelib import (
     DELEGATE,
 )
 
-from pprint import pprint
-import logging
-import datetime
-import dateutil.parser
-import time
-
-import jwt
-import msal
-import platformdirs
-import pytz
-import json
-import re
 
 
 # from http://stackoverflow.com/questions/9868653/find-first-sequence-item-that-matches-a-criterium
@@ -45,9 +49,46 @@ class JSONAgendaEncoder(json.JSONEncoder):
 DEFAULT_CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753"  # thunderbird client_id
 DEFAULT_TIMEZONE = "Europe/Amsterdam"
 DEFAULT_CACHE_FILE = Path(platformdirs.user_cache_dir()) / Path("net.zoetekouw.surfchange.tokens.bin")
-DEFAULT_EXCHANGE_SCOPE = ["https://outlook.office.com/EWS.AccessAsUser.All"]
+#DEFAULT_EXCHANGE_SCOPE = ["https://outlook.office.com/EWS.AccessAsUser.All"]
+DEFAULT_EXCHANGE_SCOPE = [
+    "https://outlook.office.com/Calendars.Read",
+    "https://outlook.office.com/Calendars.Read.Shared",
+    "https://outlook.office.com/User.ReadBasic.All",
+]
 DEFAULT_GRAPH_SCOPE = ["User.Read", "User.ReadBasic.All"]
 DEFAULT_EWS_SERVER = "outlook.office.com"
+
+
+# see https://learn.microsoft.com/en-us/exchange/client-developer/web-service-reference/myresponsetype
+class ResponseType(StrEnum):
+    UNKNOWN = "Unknown"
+    ORGANIZER = "Organizer"
+    TENTATIVE = "Tentative"
+    ACCEPT = "Accept"
+    DECLINE = "Decline"
+    NORESPONSE = "NoResponseReceived"
+
+
+
+@dataclasses.dataclass
+class Attendee:
+    name: str|None = None
+    email: str|None = None
+    response: ResponseType = ResponseType.UNKNOWN
+
+    @staticmethod
+    def from_ews(ews_attendee: exchangelib.Attendee):
+        return Attendee(
+            name=ews_attendee.mailbox.name,
+            email=ews_attendee.mailbox.email_address,
+            response=ResponseType(ews_attendee.response_type)
+        )
+
+    def __hash__(self):
+        return hash(self.email)
+
+    def __eq__(self, other):
+        return self.email == other.email
 
 
 # token cache that automatically saves to file on changes
@@ -86,7 +127,6 @@ class SurfTokenCache(msal.SerializableTokenCache):
 class SurfAgenda:
     def __init__(
         self,
-        email,
         client_id=DEFAULT_CLIENT_ID,
         cache_file=DEFAULT_CACHE_FILE,
         tz=DEFAULT_TIMEZONE,
@@ -94,9 +134,8 @@ class SurfAgenda:
         self.logger = logging.getLogger(__name__)
         self.logger.debug("Initializing SurfAgenda")
 
-        self.email = email
+        self._email = None
         self.client_id = client_id
-        self.authority = "https://login.microsoftonline.com/common"
         self.scopes = DEFAULT_EXCHANGE_SCOPE + DEFAULT_GRAPH_SCOPE
 
         self.tz = pytz.timezone(tz)
@@ -116,10 +155,18 @@ class SurfAgenda:
         # try to read cache
         app = msal.PublicClientApplication(
             client_id=self.client_id,
-            authority=self.authority,
+            authority="https://login.microsoftonline.com/surf.nl",
             token_cache=self._msal_cache,
         )
         return app
+
+    @property
+    def email(self):
+        if self._email is None:
+            accounts = self._msal_app.get_accounts()
+            if accounts:
+                self._email = accounts[0]["username"]
+        return self._email
 
     def authenticate(self):
         app = self._msal_app
@@ -155,7 +202,7 @@ class SurfAgenda:
         print(
             f"Found account for {accounts[0]['username']} in cache. Trying to fetch token silently"
         )
-        token = self._msal_app.acquire_token_silent(
+        token = self._msal_app.acquire_token_silent_with_error(
             scopes=scopes,
             account=accounts[0],
             authority=None,
@@ -181,7 +228,12 @@ class SurfAgenda:
         return self.get_token(DEFAULT_GRAPH_SCOPE)
 
 
-    def _get_account(self, email):
+
+
+    def _get_account(self, email=None):
+        if email is None:
+            email = self.email
+
         # now exchangelib:
         creds = OAuth2AuthorizationCodeCredentials(access_token=self.get_EWS_token())
         # creds = OAuth2AuthorizationCodeCredentials( access_token=OAuth2Token({'access_token': token}))
@@ -213,7 +265,7 @@ class SurfAgenda:
 
         return dateutil.parser.parse(date, dayfirst=True, yearfirst=False)
 
-    def get_agenda(self, email, dt_start, dt_stop):
+    def get_agenda(self, dt_start: datetime.datetime, dt_stop: datetime.datetime, email=None):
         self.logger.debug(
             "get_agenda for {}, from {} to {}".format(email, dt_start, dt_stop)
         )
@@ -225,11 +277,19 @@ class SurfAgenda:
         if dt_stop < dt_start:
             return list()
 
+        def agenda_sort_key(a: exchangelib.EWSDateTime|exchangelib.EWSDate):
+            s = a.start
+            if isinstance(s, exchangelib.EWSDate) or isinstance(s, datetime.date):
+                return datetime.datetime.combine(s, datetime.time.min)
+            elif isinstance(a, exchangelib.EWSDateTime) or isinstance(s, datetime.datetime):
+                return datetime.datetime(s)
+            raise ValueError("Unknown type")
+
         agenda_items = account.calendar.view(
             exchangelib.EWSDateTime.from_datetime(dt_start),
             exchangelib.EWSDateTime.from_datetime(dt_stop),
         )
-        agenda_items = sorted(agenda_items, key=lambda a: a.start)
+        agenda_items = sorted(agenda_items, key=agenda_sort_key)
 
         meetings = list()
         for item in agenda_items:
@@ -239,42 +299,57 @@ class SurfAgenda:
             is_private = item.sensitivity.lower() == "private"
 
             attendees = list()
-            if item.required_attendees and not is_private:
-                attendees.append(
-                    [
-                        (p.mailbox.name, p.mailbox.email_address)
-                        for p in item.required_attendees
-                    ]
-                )
-            if item.optional_attendees and not is_private:
-                attendees.append(
-                    [
-                        (p.mailbox.name, p.mailbox.email_address)
-                        for p in item.optional_attendees
-                    ]
+            if not is_private:
+                # note that optional_attendees and required_attendees might be None
+                attendees = set(
+                    Attendee.from_ews(p) for p in (item.optional_attendees or []) + (item.required_attendees or [])
                 )
 
-            organizer = ("", "")
+            resources = list()
+            if not is_private:
+                # note that optional_attendees and required_attendees might be None
+                resources = set(Attendee.from_ews(p) for p in (item.resources or []))
+
+            organizer = Attendee()
             if item.organizer and not is_private:
-                organizer = (item.organizer.name, item.organizer.email_address)
+                organizer = Attendee(item.organizer.name, item.organizer.email_address, ResponseType.ORGANIZER)
 
-            # TODO: change dates/times to proper datetime.(date)(time), and handle stringification during json
-            # serialization
+                # this corrects the responsetype;
+                # works because Attendee equality only considers email addresses
+                if organizer in attendees:
+                    attendees.remove(organizer)
+                attendees.add(organizer)
+
+            def ewstime2datetime(t: exchangelib.EWSDate|exchangelib.EWSDateTime, tz: datetime.tzinfo = None):
+                # note that EWSDate is a subclass of datetime.date, and EWSDateTime is a subclass of datetime
+                if isinstance(t, datetime.date):
+                    return datetime.datetime.combine(item.start, datetime.time.min, tzinfo=tz)
+                elif isinstance(t, datetime.datetime):
+                    return datetime.datetime(t).astimezone(tz)
+                raise ValueError("Unknown type")
+
+            start = ewstime2datetime(item.start, self.tz)
+            end = ewstime2datetime(item.end, self.tz)
+
+            # TODO: handle stringification during json serialization
             meeting = dict(
                 {
-                    "start": item.start.astimezone(self.tz),
-                    "end": item.end.astimezone(self.tz),
-                    "time_start": item.start.astimezone(self.tz).strftime("%H:%M"),
-                    "time_end": item.end.astimezone(self.tz).strftime("%H:%M"),
-                    "date_start": item.start.astimezone(self.tz).strftime("%Y-%m-%d"),
-                    "date_end": item.end.astimezone(self.tz).strftime("%Y-%m-%d"),
+                    "start": start,
+                    "end": end,
+                    "time_start": start.strftime("%H:%M"),
+                    "time_end": end.strftime("%H:%M"),
+                    "date_start": start.strftime("%Y-%m-%d"),
+                    "date_end": end.strftime("%Y-%m-%d"),
+                    "duration": end-start,
                     "all_day": item.is_all_day,
                     "organizer": organizer,
-                    "subject": (
-                        item.subject if not is_private else "Private appointment"
-                    ),
+                    "online": item.is_online_meeting,
+                    "subject": (item.subject if not is_private else "Private appointment"),
+                    "description": (item.text_body if not is_private else ""),
                     "location": item.location if not is_private else "Undisclosed",
                     "attendees": attendees,
+                    "resources": resources,
+                    "my_response": ResponseType(item.my_response_type),
                 }
             )
             meetings.append(meeting)
@@ -285,7 +360,7 @@ class SurfAgenda:
 
         return meetings
 
-    def get_agenda_for_days(self, email, date_start, date_stop):
+    def get_agenda_for_days(self, date_start: datetime.date, date_stop: datetime.date, email=None):
         assert isinstance(date_start, datetime.date) and isinstance(
             date_stop, datetime.date
         )
@@ -297,12 +372,12 @@ class SurfAgenda:
             date_stop, datetime.time(hour=23, minute=59, second=59, tzinfo=self.tz)
         )
 
-        return self.get_agenda(email, dt_start, dt_stop)
+        return self.get_agenda(email=email, dt_start=dt_start, dt_stop=dt_stop)
 
-    def get_agenda_for_day(self, email, date=datetime.date.today()):
+    def get_agenda_for_day(self, email=None, date=datetime.date.today()):
         realdate = self._parse_date(date)
         assert isinstance(realdate, datetime.date)
-        return self.get_agenda_for_days(email, realdate, realdate), realdate
+        return self.get_agenda_for_days(email=email, date_start=realdate, date_stop=realdate), realdate
 
     def get_availability(self, email, date=datetime.date.today()):
         self.logger.info("Fetching availability for %s on %s", email, date.isoformat())
